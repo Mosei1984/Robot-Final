@@ -53,7 +53,7 @@ bool IKSolver::solveIK(const TargetPose& target, VectorXf& result) {
         Vector3f posError = target.position - currentPos;
 
         // Optional: Orientierung als Fehler berechnen
-        Vector3f orientError = Vector3f::Zero();
+        
         if (currentMode == IKMode::POSITION_AND_ORIENTATION) {
             // Nur Roll, Pitch, Yaw Zielorientierung später implementieren
         }

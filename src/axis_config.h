@@ -6,7 +6,10 @@
 
 // Anzahl der Achsen
 #define NUM_AXES 6
-
+#define TP_SD_CS  10                // Setze hier deinen echten SD-Karten-CS-Pin
+#define GEAR_CONFIG_FILE "/gear_config.json"
+#define NUM_AXES 6
+#define STEPS_PER_REV 800     
 // Struktur für Achskonfiguration
 struct AxisConfig {
   uint8_t stepPin;
@@ -22,6 +25,9 @@ struct AxisConfig {
 // Globale Konfigurationsarrays
 extern AxisConfig axisConfigs[NUM_AXES];
 extern AccelStepper* steppers[NUM_AXES];
+extern float gearRatio[NUM_AXES];
+extern bool invertDirection[NUM_AXES];
+extern float stepsPerDeg[NUM_AXES];
 
 // Funktionen zur Initialisierung und Steuerung
 void setupAxes();

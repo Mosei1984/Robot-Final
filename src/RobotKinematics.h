@@ -2,13 +2,17 @@
 
 #include <Arduino.h>
 #include <math.h>
-
+#include <Adafruit_ADXL345_U.h>
+#include <Adafruit_Sensor.h>
 // Pose im kartesischen Raum (Position + ZYX-Orientierung)
 struct CartesianPose {
     float x, y, z;            // Position (mm)
     float yaw, pitch, roll;   // Orientierung (Euler-Winkel Z-Y-X, in Rad)
 };
-
+struct AccelData {
+    float x_g, y_g, z_g;        // Rohdaten in g
+    float x_ms2, y_ms2, z_ms2;  // SI-Einheiten in m/s²
+};
 // Gelenkwinkel-Container (6 DOF)
 struct JointAngles {
     float angles[6];          // Gelenkwinkel in Radiant
@@ -33,15 +37,11 @@ struct RobotConfig {
 };
 
 // Rohwerte des Beschleunigungssensors (zum Messen von Schwingungen)
-struct AccelData {
-    int16_t x;   // Rohbeschleunigung X-Achse
-    int16_t y;   // Rohbeschleunigung Y-Achse
-    int16_t z;   // Rohbeschleunigung Z-Achse
-};
+
 
 class RobotKinematics {
 public:
-    // Konstruktor – initialisiert mit gegebener Roboterkonfiguration
+    AccelData getToolAcceleration();// Konstruktor – initialisiert mit gegebener Roboterkonfiguration
     RobotKinematics(const RobotConfig& config);
 
     // Getter/Setter für aktuelle Gelenkwinkel & Pose
@@ -64,14 +64,15 @@ public:
 
     // Hilfsfunktion: Normalisiert Winkel auf [−π, +π]
     static float normalizeAngle(float angle);
-
+    bool initADXL();
     // Liest die aktuellen Beschleunigungswerte des ADXL345 am Tool
-    AccelData getToolAcceleration();
+    
 
 private:
     // Hilfsfunktion: Berechnet die 4x4-DH-Transformationsmatrix für Gelenk i bei Winkel theta
     void computeDHMatrix(int i, float theta, float T[4][4]);
-
+    Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+    AccelData _toolAccel;
     RobotConfig  _config;         // Roboter-Konfiguration (DH-Parameter, Offsets, Limits)
     JointAngles  _currentAngles;  // aktuelle Gelenkwinkel
     CartesianPose _currentPose;   // aktuelle Pose des Tools (bezogen auf Basis)

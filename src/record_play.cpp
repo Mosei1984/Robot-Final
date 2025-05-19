@@ -1,5 +1,8 @@
 // record_play.cpp
 #include "record_play.h"
+#include <SD.h>
+#include <Arduino.h>
+#include "RobotKinematics.h"
 
 RecordPlayManager::RecordPlayManager(const char* filename)
     : _filename(filename) {}

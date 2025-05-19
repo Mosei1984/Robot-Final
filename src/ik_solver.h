@@ -2,7 +2,8 @@
 #define IK_SOLVER_H
 
 #include <Arduino.h>
-#include <Eigen.h>
+#include <ArduinoEigenDense.h>
+using namespace Eigen;
 #include <MatrixMath.h>
 #include <Wire.h>
 

@@ -46,5 +46,6 @@ void loadJoystickCalibration();
 
 // Debug-Ausgabe
 void debugJoystickValues();
+extern bool joystickCalibrated;
 
 #endif

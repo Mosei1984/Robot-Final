@@ -1,17 +1,20 @@
 #include "RobotKinematics.h"
-#include <Eigen/Dense>
-#include <Eigen/SVD>
-#include <Wire.h>
+#include <Adafruit_ADXL345_U.h>
+#include <ArduinoEigenDense.h>
+using namespace Eigen;
 
 // I2C-Adresse des ADXL345 (alternativ 0x1D, abhängig von Verbindungs-Pin)
 #define ADXL345_ADDR  0x53
-
+Adafruit_ADXL345_h::Adafruit_ADXL345_Unified accel;
 // Registerdefinitionen ADXL345
 #define REG_POWER_CTL  0x2D
 #define REG_DATA_FORMAT 0x31
 #define REG_BW_RATE    0x2C
 #define REG_DATAX0     0x32  // ab DATAX0 folgen 6 Bytes für X0, X1, Y0, Y1, Z0, Z1
-
+void accel_init() {
+    // ADXL345 muss im Setup/Constructor mit accel.begin() initialisiert sein!
+    accel.begin();
+}
 RobotKinematics::RobotKinematics(const RobotConfig& config) {
     _config = config;
     // Aktuelle Winkel initialisieren (Standard: alle 0)
@@ -20,6 +23,11 @@ RobotKinematics::RobotKinematics(const RobotConfig& config) {
     }
     // Aktuelle Pose initial berechnen
     _currentPose = forwardKinematics(_currentAngles);
+     if(!accel.begin()) {
+        Serial.println("ADXL345 nicht gefunden, checke Verkabelung!");
+        // Optional: Fehlerbehandlung
+    }
+    accel.setRange(ADXL345_RANGE_4_G); // Messbereich einstellen
 
     // Debug-Testpunkte als Ausgänge konfigurieren
     pinMode(TESTPOINT_0, OUTPUT);
@@ -177,7 +185,7 @@ bool RobotKinematics::inverseKinematics(const CartesianPose& targetPose, JointAn
         // Rotationsfehler R_err = R_target * R_current^T
         Eigen::Matrix3f R_err = R_target * R_current.transpose();
         // Achse-Angle aus R_err extrahieren
-        float angle_err = acosf(fmin(1.0f, (R_err.trace() - 1.0f) / 2.0f));  // Winkel
+        float angle_err = acosf(fminf(1.0f, ((float)R_err.trace() - 1.0f) / 2.0f));  // Winkel
         Eigen::Vector3f axis_err;
         if (angle_err < 1e-6f) {
             axis_err << 0, 0, 0;
@@ -331,26 +339,18 @@ float RobotKinematics::normalizeAngle(float angle) {
 }
 
 AccelData RobotKinematics::getToolAcceleration() {
+    sensors_event_t event;
     AccelData data;
-    uint8_t raw[6];
-    // Lese 6 Bytes ab DATAX0
-    Wire.beginTransmission(ADXL345_ADDR);
-    Wire.write(REG_DATAX0);
-    Wire.endTransmission(false);  // Restart
-    Wire.requestFrom(ADXL345_ADDR, (uint8_t)6);
-    for (int i = 0; i < 6; ++i) {
-        if (Wire.available()) {
-            raw[i] = Wire.read();
-        } else {
-            raw[i] = 0;
-        }
-    }
-    // Zusammenfügen der 16-bit Werte (Little-Endian)
-    int16_t x = (int16_t)((raw[1] << 8) | raw[0]);
-    int16_t y = (int16_t)((raw[3] << 8) | raw[2]);
-    int16_t z = (int16_t)((raw[5] << 8) | raw[4]);
-    data.x = x;
-    data.y = y;
-    data.z = z;
+
+    accel.getEvent(&event);  // Member, kein globales Objekt!
+
+    data.x_ms2 = event.acceleration.x;
+    data.y_ms2 = event.acceleration.y;
+    data.z_ms2 = event.acceleration.z;
+
+    data.x_g = data.x_ms2 / 9.81f;
+    data.y_g = data.y_ms2 / 9.81f;
+    data.z_g = data.z_ms2 / 9.81f;
+
     return data;
 }
