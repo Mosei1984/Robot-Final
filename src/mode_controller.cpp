@@ -1,145 +1,123 @@
 #include "mode_controller.h"
+#include "Debug.h"
 #include "display_system.h"
 #include "joystick_system.h"
+#include "stepper_control.h"
 #include "robot_system.h"
-#include <Wire.h>
 
-// Initialize static members
-ModeController::Mode ModeController::currentMode = MODE_JOINT;
-bool ModeController::buttonWasPressed = false;
-unsigned long ModeController::buttonPressTime = 0;
-bool ModeController::debugState = false;
-
-void ModeController::init() {
-    // Configure mode switch and debug pins
-    pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
+namespace ModeController {
+    // Define the variables
+    Mode currentMode = MODE_NORMAL;
+    bool buttonWasPressed = false;
+    unsigned long buttonPressTime = 0;
+    int debugState = 0;
+    JoystickValues joystickValues = {0};
     
-    // Initialize display via DisplaySystem
-    DisplaySystem::init();
-    
-    // Initialize ADXL345 accelerometer for future stability control
-    initADXL();
-    
-    
-    // Display welcome animation
-    showAnimation();
-}
-
-void ModeController::update() {
-    // Read joystick values
-    _joystickConfig = JoystickConfig::readValues();
-    
-    // Check for mode change (using right button)
-    if (joystickValues.rightButton && !buttonWasPressed) {
-        // Button pressed - record time
-        buttonPressTime = millis();
-        buttonWasPressed = true;
-    } else if (joystickValues.rightButton && buttonWasPressed) {
-        // Button is still pressed - check if it's been held long enough
-        if ((millis() - buttonPressTime) > BUTTON_PRESS_TIME) {
-            // Switch mode
-            switchMode();
-            
-            // Reset button state to avoid multiple mode changes
-            buttonWasPressed = false;
-        }
-    } else if (!joystickValues.rightButton && buttonWasPressed) {
-        // Button released without mode change
-        buttonWasPressed = false;
+    // Initialization function
+    void init() {
+        // Initialize mode switch pin
+        pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
+        
+        // Set initial mode
+        currentMode = MODE_NORMAL;
+        
+        // Initialize ADXL if needed
+        initADXL();
+        
+        // Show startup animation
+        showAnimation();
     }
-    // Update system state based on current mode
-    updateSystemState();
-}
-
-void ModeController::switchMode() {
-    // Cycle through available modes
-    currentMode = static_cast<Mode>((currentMode + 1) % 3);
     
-    // Show the new mode on the display
-    DisplaySystem::showMessage(
-        "Mode changed",
-        currentMode == MODE_JOINT ? "Joint Control" :
-        (currentMode == MODE_POSITION_ONLY ? "Position Control" : "Full Control"),
-        1000
-    );
+    // Update function called regularly
+    void update() {
+        // Update joystick values from the joystick system
+        joystickValues = JoystickSystem::getJoystickValues();
+        
+        // Check if mode switch button is pressed
+        if (digitalRead(MODE_SWITCH_PIN) == LOW) {
+            static unsigned long lastPressTime = 0;
+            if (millis() - lastPressTime > BUTTON_PRESS_TIME) {
+                switchMode();
+                lastPressTime = millis();
+            }
+        }
+        
+        // Update system state based on current mode
+        updateSystemState();
+    }
     
-    Serial.print(F("Mode changed to: "));
-    Serial.println(currentMode);
-}
-
-Mode ModeController::getCurrentMode() {
-    return currentMode;
-}
-
-void ModeController::showAnimation() {
-    // Simple animation to show on startup
-    DisplaySystem::showMessage("6DOF Robot", "Ready", 1500);
-}
-
-void ModeController::initADXL() {
-    // Initialize I2C
-    Wire.begin();
+    // Switch to next mode in sequence
+    void switchMode() {
+        // Cycle through available modes
+        int nextMode = (static_cast<int>(currentMode) + 1) % 6; // Assuming 6 modes
+        currentMode = static_cast<Mode>(nextMode);
+        
+        Debug::print(F("Switched to mode: "));
+        Debug::println(static_cast<int>(currentMode));
+    }
     
-    // Future implementation of accelerometer for stability control
-}
-void ModeController::updateSystemState() {
-    // Aktualisiere den Roboter-Systemzustand basierend auf dem aktuellen Controller-Modus
-    if (RobotSystem::getCurrentState() == NORMAL_OPERATION) {
-        // Display je nach Modus unterschiedlich aktualisieren
+    // Get current mode
+    Mode getCurrentMode() {
+        return currentMode;
+    }
+    
+    // Show animation on display
+    void showAnimation() {
+        // Show transition animation on display
+        // Implementation depends on your display system
+    }
+    
+    // Initialize ADXL accelerometer if used
+    void initADXL() {
+        // Initialize accelerometer code here
+        // Implementation depends on your hardware
+    }
+    
+    // Set specific mode
+    void setMode(Mode mode) {
+        currentMode = mode;
+    }
+    
+    // Update the system state based on current mode
+    void updateSystemState() {
+        
+        
+        // Display differently based on mode
         switch (currentMode) {
-            case MODE_JOINT:
-                // Joint-Modus-Display verwenden
-                DisplaySystem::displayJointMode(
-                    RobotSystem::getKinematics(),
-                    StepperSystem::getSelectedJoint()
-                );
-                
-                // Joysticks für Joint-Steuerung verarbeiten
-                JoystickSystem::processJointModeJoysticks();
-                break;
-                
-            case MODE_POSITION_ONLY:
-                // Positions-Modus-Display verwenden
-                DisplaySystem::displayPositionMode(RobotSystem::getKinematics());
-                
-                // Joysticks für Position-Steuerung verarbeiten
-                JoystickSystem::processKinematicModeJoysticks();
-                break;
-                
-            case MODE_FULL_POSE:
-                // Vollständiges Pose-Display verwenden
-                DisplaySystem::displayFullPoseMode(RobotSystem::getKinematics());
-                
-                // Joysticks für vollständige Pose-Steuerung verarbeiten
-                JoystickSystem::processKinematicModeJoysticks();
+            case MODE_NORMAL:
+                // For RobotKinematics conversion issues, use only RobotSystem functions
+                // Don't try to directly use or convert RobotKinematics pointers
+                // Example:
+                // RobotSystem::displayRobotInfo();
                 break;
                 
             case MODE_TEACHING:
-                // Teaching-Modus-Display verwenden
-                DisplaySystem::displayTeachingMode();
+                // Teaching mode code
                 break;
                 
-            case MODE_HOMING:
-                // Homing-Modus-Display verwenden
-                if (RobotSystem::isHomingStarted()) {
-                    DisplaySystem::displayHomingProgress(RobotSystem::getHomingJointIndex());
-                } else {
-                    DisplaySystem::displayHomingMenu();
-                    JoystickSystem::processMenuJoysticks();
-                }
-                break;
-                
-            case MODE_SETTINGS:
-                // Einstellungsmenü-Display verwenden
-                DisplaySystem::displaySettingsMenu();
-                JoystickSystem::processMenuJoysticks();
+            case MODE_PLAYBACK:
+                // Playback mode code
                 break;
                 
             case MODE_DEBUG:
-                // Debug-Display verwenden
-                DisplaySystem::displayDebugInfo();
+                // Debug mode code - fix the displayHomingMenu call
+                DisplaySystem::displayHomingMenu(
+                    RobotSystem::getHomingMenuSelection(), 
+                    RobotSystem::getHomingMenuOptionCount()
+                );
+                break;
+                
+            case MODE_CONFIG:
+                // Config mode code
+                break;
+                
+            case MODE_DEBUG_ADVANCED:
+                // Use correct function name
+                DisplaySystem::displayDebugScreen();
+                break;
+                
+            default:
                 break;
         }
     }
-    // Andere Systemzustände (HOMING, CALIBRATION, usw.) werden außerhalb verarbeitet
 }

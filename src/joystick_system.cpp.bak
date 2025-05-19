@@ -2,12 +2,12 @@
 #include "robot_system.h"
 #include "Debug.h"
 
-// Define joystick objects
+// Define joystick objects outside the namespace
 static Joystick* leftJoystick = nullptr;
 static Joystick* rightJoystick = nullptr;
 static bool calibrating = false;
 
-// Initialize the joystick system
+// Functions all defined with namespace qualification
 void JoystickSystem::init() {
     Debug::println(F("Initializing joystick system..."));
     
@@ -22,7 +22,6 @@ void JoystickSystem::init() {
     Debug::println(F("Joystick system initialized"));
 }
 
-// Update joystick readings
 void JoystickSystem::update() {
     // Read joystick values
     if (leftJoystick) leftJoystick->read();
@@ -34,51 +33,33 @@ void JoystickSystem::update() {
     }
 }
 
-// Get the left joystick object
 Joystick* JoystickSystem::getLeftJoystick() {
     return leftJoystick;
 }
 
-// Get the right joystick object
 Joystick* JoystickSystem::getRightJoystick() {
     return rightJoystick;
 }
 
-// Start the calibration process
 void JoystickSystem::startCalibration() {
     calibrating = true;
     if (leftJoystick) leftJoystick->startCalibration();
     if (rightJoystick) rightJoystick->startCalibration();
 }
 
-// Process ongoing calibration
 void JoystickSystem::processCalibration() {
-    // Call calibrate() on both joysticks
-    if (leftJoystick) leftJoystick->calibrate();
-    if (rightJoystick) rightJoystick->calibrate();
+    bool leftDone = !leftJoystick || leftJoystick->calibrate();
+    bool rightDone = !rightJoystick || rightJoystick->calibrate();
     
-    // Use a timer approach for calibration
-    static unsigned long calibrationStartTime = 0;
-    
-    // Initialize the timer if it's 0
-    if (calibrationStartTime == 0) {
-        calibrationStartTime = millis();
-    }
-    
-    // Exit calibration mode after a fixed time (5 seconds)
-    if (millis() - calibrationStartTime > 5000) {
+    if (leftDone && rightDone) {
         calibrating = false;
-        calibrationStartTime = 0;  // Reset for next time
-        Debug::println(F("Calibration completed"));
     }
 }
 
-// Check if calibration is in progress
 bool JoystickSystem::isCalibrating() {
     return calibrating;
 }
 
-// Process joysticks in joint control mode
 void JoystickSystem::processJointModeJoysticks() {
     // Get current joint
     int jointIndex = StepperSystem::getSelectedJoint();
@@ -109,7 +90,6 @@ void JoystickSystem::processJointModeJoysticks() {
     }
 }
 
-// Process joysticks in kinematic control mode
 void JoystickSystem::processKinematicModeJoysticks() {
     // Implement kinematic control
     if (!leftJoystick || !rightJoystick || !RobotSystem::getKinematics()) {
@@ -135,7 +115,6 @@ void JoystickSystem::processKinematicModeJoysticks() {
     RobotSystem::moveToPose(currentPose, false);
 }
 
-// Get normalized values from all joysticks
 JoystickValues JoystickSystem::getJoystickValues() {
     JoystickValues values = {};
     

@@ -2,55 +2,39 @@
 #define MODE_CONTROLLER_H
 
 #include <Arduino.h>
-
-// Betriebsmodi des Roboters
-enum Mode {
-    MODE_JOINT,              // Gelenksteuerung
-    MODE_POSITION_ONLY,      // Positionssteuerung (X,Y,Z)
-    MODE_FULL_POSE,          // Vollständige Pose-Steuerung (X,Y,Z,Roll,Pitch,Yaw)
-    MODE_TEACHING,           // Teach-In-Modus
-    MODE_HOMING,             // Referenzierungsmodus
-    MODE_SETTINGS,           // Einstellungsmenü
-    MODE_DEBUG               // Debug-Modus
-};
-
-// Debug-Level
-enum DebugLevel {
-    DEBUG_NONE = 0,
-    DEBUG_ERROR,
-    DEBUG_WARNING,
-    DEBUG_INFO,
-    DEBUG_VERBOSE
-};
+#include "joystick_types.h" // Use the shared type definition
 
 namespace ModeController {
-    // Initialisierung
+    // Define the Mode enum
+    enum Mode {
+        MODE_NORMAL = 0,
+        MODE_TEACHING = 1,
+        MODE_PLAYBACK = 2,
+        MODE_DEBUG = 3,
+        MODE_CONFIG = 4,
+        MODE_DEBUG_ADVANCED = 5
+    };
+    
+    // Constants
+    const unsigned long BUTTON_PRESS_TIME = 500;  // ms
+    #define MODE_SWITCH_PIN 33  // Define this as a macro
+    
+    // Function declarations
     void init();
-    
-    // Aktualisierung (wird vom Hauptloop aufgerufen)
     void update();
-    
-    // Zeitüberwachung für Langdruck
-    void handleLongPress();
-    
-    // Modus-Funktionen
+    void switchMode();
+    void showAnimation();
+    void initADXL();
+    void setMode(Mode mode);
     Mode getCurrentMode();
-    void setMode(Mode newMode);
-    const char* getModeString();
-    
-    // Debug-Funktionen
-    void toggleDebug();
-    bool isDebugEnabled();
-    void setDebugLevel(DebugLevel level);
-    DebugLevel getDebugLevel();
-    
-    // Systemzustand aktualisieren
     void updateSystemState();
     
-    // Externe Variablen für Zustandsverwaltung
+    // External variables
+    extern Mode currentMode;
     extern bool buttonWasPressed;
     extern unsigned long buttonPressTime;
-    extern bool debugState;
+    extern int debugState;
+    extern JoystickValues joystickValues;
 }
 
 #endif // MODE_CONTROLLER_H

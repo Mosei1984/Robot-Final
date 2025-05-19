@@ -1,93 +1,54 @@
 #include "robot_system.h"
 #include "Debug.h"
-#include "kalmanfilter.h"
-#include <EEPROM.h>
+#include "display_system.h"
 #include "joystick_system.h"
 #include "stepper_control.h"
-#include "display_system.h"
+#include <EEPROM.h>
+#include <SD.h>
 
-// Globale Variablen aus main.cpp, die wir nutzen müssen
-extern AccelStepper* _steppers[6];
-extern PinConfig _pinConfig;
-extern JoystickConfig _joystickConfig;
-extern StepperConfig _stepperConfig[6];
+#define ROBOT_HOME_MAGIC 0x42ABCDEF
 
 namespace RobotSystem {
-    // Private Zustandsvariablen
-    static SystemState currentState = STATE_STARTUP;
-    static bool homingStarted = false;
-    static int homingJointIndex = 0;
-    static int selectedJoint = 0;
-    static int homingMenuSelection = 0;
-    static bool calibrationLock = false;
-    static unsigned long stateChangeTime = 0;
-    static unsigned long lastButtonCheckTime = 0;
-    static unsigned long lastMenuMove = 0;
-    static unsigned long lastClearHomePress = 0;
-    static int clearHomePressCount = 0;
+    // Definition der externen Variablen
+    RobotKinematics* robotKin = nullptr;
+    RobotConfig robotConfig;
+    SystemState currentState = STATE_STARTUP;
+    unsigned long stateChangeTime = 0;
+    int homingJointIndex = 0;
+    bool homingStarted = false;
+    int homingMenuSelection = 0;
+    bool calibrationLocked = false;
     
-    // RobotKinematics und RobotConfig
-    static RobotConfig robotConfig;
-    static RobotKinematics* robotKin = nullptr;
+    // Hilfsfunktionen für Homing
+    static bool _homeJoint(int jointIndex);
+    static void _moveToCenter();
     
-    // Joystick-Zustände für Richtungsänderungen
-    enum JoystickStateInternal {
-        JOYSTICK_CENTERED_INTERNAL,
-        JOYSTICK_LEFT_INTERNAL,
-        JOYSTICK_RIGHT_INTERNAL,
-        JOYSTICK_UP_INTERNAL,
-        JOYSTICK_DOWN_INTERNAL,
-        
-    };
-    // Systemzustände
-enum SystemState {
-    STATE_STARTUP,
-    STATE_JOINT_MODE,
-    STATE_KINEMATIC_MODE,
-    STATE_HOMING_MODE,
-    STATE_CALIBRATION_MODE,
-    NORMAL_OPERATION,
-    ERROR_STATE,
-    EMERGENCY_STOP
-};
-    static JoystickStateInternal joystickXState = JOYSTICK_CENTERED_INTERNAL;
-    
-    // Kalmanfilter für sanfte Bewegungen
-    static KalmanFilter positionFilterX(0.01, 0.1);
-    static KalmanFilter positionFilterY(0.01, 0.1);
-    static KalmanFilter positionFilterZ(0.01, 0.1);
-    static KalmanFilter rotationFilter(0.01, 0.1);
-    
-    // Datenstruktur für das Speichern der Home-Position
-    struct RobotHomeData {
-        uint32_t magic;
-        float jointAngles[6];
-    };
-    
+    // Initialisierung des Roboter-Systems
     void init() {
         Debug::println(F("Initializing robot system..."));
         
         // Roboter-Konfiguration initialisieren
         initRobotConfig();
         
-        // Roboterkinematik initialisieren
+        // Kinematik-Objekt erstellen
         robotKin = new RobotKinematics(robotConfig);
         
-        // Initialisiere Gelenkwinkel auf Null
+        // Gelenk-Winkel auf 0 initialisieren
         JointAngles init = {{0, 0, 0, 0, 0, 0}};
         robotKin->setCurrentJointAngles(init);
         
-        // Anfangszustandsvariablen setzen
+        // System-Zustand setzen
+        currentState = STATE_STARTUP;
         stateChangeTime = millis();
-        
-        // Filter initialisieren
-        resetKalmanFilters();
         
         Debug::println(F("Robot system initialized"));
     }
     
+    // Konfiguration des Roboters initialisieren
     void initRobotConfig() {
-        // Gelenkwinkelgrenzen (in Grad)
+        Debug::println(F("Initializing robot configuration"));
+        
+        // Gelenk-Winkelgrenzen (in Grad)
         for (int i = 0; i < 6; i++) {
             robotConfig.jointMin[i] = -180.0 * DEG_TO_RAD;
             robotConfig.jointMax[i] = 180.0 * DEG_TO_RAD;
@@ -106,24 +67,29 @@ enum SystemState {
         robotConfig.toolOffsetX = 0.0;
         robotConfig.toolOffsetY = 0.0;
         robotConfig.toolOffsetZ = 30.0;
-        
-        Debug::println(F("Robot configuration initialized"));
     }
     
+    // Haupt-Update-Funktion
     void update() {
-        // Diese Funktion wird vom Hauptloop aufgerufen
-        // Die Verarbeitung des aktuellen Zustands erfolgt in processCurrentState()
+        // Zustandsmachine verarbeiten
+        processCurrentState();
     }
     
+    // Zustandsmachine verarbeiten
     void processCurrentState() {
-        // Prozessiert den aktuellen Roboterzustand
         switch (currentState) {
+            case STATE_STARTUP:
+                if (millis() - stateChangeTime > 2000) {
+                    changeState(STATE_JOINT_MODE);
+                }
+                break;
+                
             case STATE_JOINT_MODE:
-                processJointControl();
+                JoystickSystem::processJointModeJoysticks();
                 break;
                 
             case STATE_KINEMATIC_MODE:
-                processKinematicControl();
+                JoystickSystem::processKinematicModeJoysticks();
                 break;
                 
             case STATE_HOMING_MODE:
@@ -131,266 +97,197 @@ enum SystemState {
                 break;
                 
             case STATE_CALIBRATION_MODE:
-                // Kalibrierung hier verarbeiten
+                // Anzeige aktualisieren
+                DisplaySystem::displayCalibrationMode();
                 break;
                 
-            default:
+            case STATE_GEAR_MENU:
+                DisplaySystem::processGearMenu();
+                break;
+                
+            case STATE_CONFIG_MODE:
+                // Konfigurationsmodus-Logik hier
+                break;
+                
+            case STATE_ERROR:
+                // Fehlerbehandlung hier
+                DisplaySystem::showError("System Error");
                 break;
         }
     }
     
-    void processButtonInput() {
-        Joystick* leftJoystick = JoystickSystem::getLeftJoystick();
-        Joystick* rightJoystick = JoystickSystem::getRightJoystick();
-        
-        if (!leftJoystick || !rightJoystick) return;
-        
-        bool leftPressed = leftJoystick->isPressed();
-        bool rightPressed = rightJoystick->isPressed();
-        
-        // Entprellen
-        if (millis() - lastButtonCheckTime < 200) return;
-        
-        // Rechter Button: Moduswechsel
-        static bool rightButtonPressed = false;
-        if (rightPressed && !rightButtonPressed) {
-            if (millis() - stateChangeTime > 500) {
-                rightButtonPressed = true;
-                lastButtonCheckTime = millis();
-                
-                // Modi durchschalten
-                if (currentState == STATE_JOINT_MODE) {
-                    setState(STATE_KINEMATIC_MODE);
-                } else if (currentState == STATE_KINEMATIC_MODE) {
-                    exitKinematicMode();
-                    setState(STATE_HOMING_MODE);
-                    homingStarted = false;
-                    homingJointIndex = 0;
-                } else if (currentState == STATE_HOMING_MODE) {
-                    setState(STATE_CALIBRATION_MODE);
-                } else if (currentState == STATE_CALIBRATION_MODE) {
-                    setState(STATE_JOINT_MODE);
-                }
-                
-                Debug::print(F("State changed to: "));
-                Debug::println(currentState);
-            }
-        } 
-        else if (!rightPressed) {
-                        rightButtonPressed = false;
-        }
-        
-        // Linker Button: Aktion im Modus
-        if (leftPressed && !calibrationLock) {
-            if (millis() - stateChangeTime > 500) {
-                if (currentState == STATE_HOMING_MODE && !homingStarted) {
-                    homingStarted = true;
-                    Debug::println(F("Homing started"));
-                } else if (currentState == STATE_CALIBRATION_MODE) {
-                    JoystickSystem::startFullCalibration();
-                }
-                
-                stateChangeTime = millis();
-                lastButtonCheckTime = millis();
-            }
-        } 
-        else if (!leftPressed) {
-            calibrationLock = false;
-        }
+    // Getter für den aktuellen Systemzustand
+    SystemState getState() {
+        return currentState;
     }
     
-    void processJointControl() {
-        Joystick* leftJoystick = JoystickSystem::getLeftJoystick();
-        Joystick* rightJoystick = JoystickSystem::getRightJoystick();
+    // Setter für den Systemzustand
+    void setState(SystemState state) {
+        currentState = state;
+        stateChangeTime = millis();
+    }
+    
+    // Getter für den Zeitpunkt des letzten Zustandswechsels
+    unsigned long getStateChangeTime() {
+        return stateChangeTime;
+    }
+    
+    // Setter für den Zeitpunkt des letzten Zustandswechsels
+    void setStateChangeTime(unsigned long time) {
+        stateChangeTime = time;
+    }
+    
+    // Zustandswechsel mit Logging
+    void changeState(SystemState newState) {
+        Debug::print(F("Changing system state from "));
+        Debug::print((int)currentState);
+        Debug::print(F(" to "));
+        Debug::println((int)newState);
         
-        if (!leftJoystick || !rightJoystick) return;
+        setState(newState);
+    }
+    
+    // Getter für das Kinematik-Objekt
+    RobotKinematics* getKinematics() {
+        return robotKin;
+    }
+    
+    // Prüfen, ob eine Pose innerhalb des Arbeitsbereichs liegt
+    bool isWithinWorkspace(const CartesianPose& pose) {
+        // Einfache Reichweiten-Prüfung
+        float a1 = robotConfig.dhParams[1].a;
+        float a2 = robotConfig.dhParams[2].a;
+        float maxReach = a1 + a2;
+        float minZ = robotConfig.dhParams[0].d;
+        float maxZ = minZ + maxReach;
         
-        // Debug-Ausgabe
-        Debug::print(F("Joystick values: Left X: "));
-        Debug::print(leftJoystick->getX());
-        Debug::print(F(", Left Y: "));
-        Debug::println(leftJoystick->getY());
+        // Euklidische Distanz zur Basis
+        float dist = sqrt(pose.x*pose.x + pose.y*pose.y + 
+                         (pose.z-minZ)*(pose.z-minZ));
         
-        // Gelenkauswahl mit rechtem Joystick X
-        float rightX = (rightJoystick->getX() - 500.0f) / 500.0f;  // auf [-1..+1]
+        return (dist <= maxReach && pose.z >= minZ && pose.z <= maxZ);
+    }
+    
+    // Bewegen zu einer bestimmten Pose
+    void moveToPose(const CartesianPose& pose, bool waitForCompletion) {
+        if (!isWithinWorkspace(pose)) {
+            Debug::println(F("Target pose outside workspace!"));
+            return;
+        }
         
-        if (rightX > 0.7f && joystickXState == JOYSTICK_CENTERED_INTERNAL) {
-            joystickXState = JOYSTICK_RIGHT_INTERNAL;
-            if (selectedJoint < 5) {
-                selectedJoint++;
-                Debug::print(F("Joint increased to: "));
-                Debug::println(selectedJoint + 1);
+        // Inverse Kinematik berechnen
+        JointAngles targetAngles;
+        if (robotKin->inverseKinematics(pose, targetAngles)) {
+            // Zielpositionen berechnen
+            long targetSteps[6];
+            for (int i = 0; i < 6; ++i) {
+                float deg = targetAngles.angles[i] * 180.0 / M_PI;
+                targetSteps[i] = deg * StepperSystem::enhancedSteppers[i].stepsPerDegree;
+                StepperSystem::steppers[i]->moveTo(targetSteps[i]);
             }
-        }
-        else if (rightX < -0.7f && joystickXState == JOYSTICK_CENTERED_INTERNAL) {
-            joystickXState = JOYSTICK_LEFT_INTERNAL;
-            if (selectedJoint > 0) {
-                selectedJoint--;
-                Debug::print(F("Joint decreased to: "));
-                Debug::println(selectedJoint + 1);
+            
+            // Auf Abschluss warten, falls gewünscht
+            if (waitForCompletion) {
+                bool allDone = false;
+                while (!allDone) {
+                    allDone = true;
+                    for (int i = 0; i < 6; ++i) {
+                        if (StepperSystem::steppers[i]->distanceToGo() != 0) {
+                            StepperSystem::steppers[i]->run();
+                            allDone = false;
+                        }
+                    }
+                }
+                
+                // Kinematik mit Stepper-Positionen synchronisieren
+                for (int i = 0; i < 6; ++i) {
+                    float posDegrees = StepperSystem::steppers[i]->currentPosition() / 
+                 StepperSystem::enhancedSteppers[i].stepsPerDegree;
+                    targetAngles.angles[i] = posDegrees * M_PI / 180.0;
+                }
+                
+                robotKin->setCurrentJointAngles(targetAngles);
             }
-        }
-        else if (fabs(rightX) < 0.4f) {
-            joystickXState = JOYSTICK_CENTERED_INTERNAL;
-        }
-        
-        // Gelenkbewegung mit linkem Joystick X (mit Deadband)
-        float rawX = leftJoystick->getXWithDeadband(_joystickConfig.deadband);
-        
-        // Normalisieren auf [-1..+1]
-        float norm = (rawX - 500.0f) / 500.0f;
-        
-        Debug::print(F("Joint mode: rawX w/ deadzone = "));
-        Debug::print(rawX);
-        Debug::print(F(" → norm = "));
-        Debug::println(norm);
-        
-        // Geschwindigkeit setzen
-        if (rawX == 0.0f) {
-            // Im Deadzone-Bereich = Stillstand
-            _steppers[selectedJoint]->setSpeed(0);
         } else {
-            // Volle Empfindlichkeit: ±maxSpeed bei |norm|==1
-            float spd = -norm * _stepperConfig[selectedJoint].maxSpeed;
-            
-            Debug::print(F(" -> Setting speed for Joint "));
-            Debug::print(selectedJoint);
-            Debug::print(F(": "));
-            Debug::println(spd);
-            
-            _steppers[selectedJoint]->setSpeed(spd);
+            Debug::println(F("Inverse kinematics failed!"));
         }
-        
-        // Motor kontinuierlich laufen lassen
-        _steppers[selectedJoint]->runSpeed();
     }
     
-    void processKinematicControl() {
-        Joystick* leftJoystick = JoystickSystem::getLeftJoystick();
-        Joystick* rightJoystick = JoystickSystem::getRightJoystick();
-        
-        if (!leftJoystick || !rightJoystick) return;
-        
-        Debug::println(F("=== processKinematicControl() start ==="));
-        
-        // Joystick-Rohwerte
-        float leftX = leftJoystick->getNormalizedX();
-        float leftY = leftJoystick->getNormalizedY();
-        float rightX = rightJoystick->getNormalizedX();
-        float rightY = rightJoystick->getNormalizedY();
-        
-        // Filter-Reset bei Stillstand
-        static bool wasMoving = false;
-        bool isMoving = (fabs(leftX) > 0.01f) || (fabs(leftY) > 0.01f) ||
-                        (fabs(rightX) > 0.01f) || (fabs(rightY) > 0.01f);
-        
-        if (!isMoving && wasMoving) {
-            // Joystick wurde losgelassen → Filter zurücksetzen
-            positionFilterX.reset();
-            positionFilterY.reset();
-            positionFilterZ.reset();
-            rotationFilter.reset();
-            Debug::println(F("Joystick released, filters reset!"));
-        }
-        wasMoving = isMoving;
-        
-        Debug::print(F("  Joystick: Lx=")); Debug::print(leftX, 2);
-        Debug::print(F("  Ly=")); Debug::print(leftY, 2);
-        Debug::print(F("  Rx=")); Debug::print(rightX, 2);
-        Debug::print(F("  Ry=")); Debug::println(rightY, 2);
-        
-        // Geschwindigkeit dynamisch setzen
-        float speedFactor = max(max(fabs(leftX), fabs(leftY)),
-                               max(fabs(rightX), fabs(rightY)));
-        float dynSpd = speedFactor * 100.0f;
-        float dynAcc = dynSpd * 2.0f;
-        
-        for (int i = 0; i < 6; ++i) {
-            _steppers[i]->setMaxSpeed(dynSpd);
-            _steppers[i]->setAcceleration(dynAcc);
-        }
-        
-        Debug::print(F("  dynSpd=")); Debug::print(dynSpd, 1);
-        Debug::print(F("  dynAcc=")); Debug::println(dynAcc, 1);
-        
-        // Delta-Berechnung via Filter
-        CartesianPose current = robotKin->getCurrentPose();
-        float xChg = positionFilterX.update(leftX * 1.0f);
-        float yChg = positionFilterY.update(-leftY * 1.0f);
-        float zChg = positionFilterZ.update(-rightY * 1.0f);
-        float yawChg = rotationFilter.update(rightX * 0.03f);
-        
-        Debug::print(F("  Deltas: xChg=")); Debug::print(xChg, 3);
-        Debug::print(F("  yChg=")); Debug::print(yChg, 3);
-        Debug::print(F("  zChg=")); Debug::print(zChg, 3);
-        Debug::print(F("  yawChg=")); Debug::println(yawChg, 4);
-        
-        // Nur bewegen, wenn signifikante Änderung
-        if (fabs(xChg) > 0.01f || fabs(yChg) > 0.01f ||
-            fabs(zChg) > 0.01f || fabs(yawChg) > 0.001f) {
-            
-            // Zielpose berechnen und begrenzen
-            CartesianPose target = current;
-            target.x += xChg;
-            target.y += yChg;
-            target.z += zChg;
-            target.yaw += yawChg;
-            
-            // Konstanten für Begrenzungen aus Konfiguration
-            const float a1 = robotConfig.dhParams[1].a;
-            const float a2 = robotConfig.dhParams[2].a;
-            const float maxRad = a1 + a2;
-            const float minZ = robotConfig.dhParams[0].d;
-            const float maxZ = minZ + maxRad;
-            
-            // Begrenzung anwenden
-            target.x = constrain(target.x, -maxRad, +maxRad);
-            target.y = constrain(target.y, -maxRad, +maxRad);
-            target.z = constrain(target.z, minZ, maxZ);
-            
-            Debug::print(F("  Kinematic target: X=")); Debug::print(target.x, 2);
-            Debug::print(F("  Y=")); Debug::print(target.y, 2);
-            Debug::print(F("  Z=")); Debug::println(target.z, 2);
-            Debug::print(F("               Yaw=")); Debug::println(target.yaw, 3);
-            
-            // IK aufrufen
-            JointAngles newA;
-            if (robotKin->inverseKinematics(target, newA)) {
-                for (int i = 0; i < 6; ++i) {
-                    float deg = newA.angles[i] * 180.0 / M_PI;
-                    long steps = deg * _stepperConfig[i].stepsPerDegree;
-                    _steppers[i]->moveTo(steps);
-                }
-                robotKin->setCurrentJointAngles(newA);
-            } else {
-                Debug::println(F("  IK failed, skipping movement"));
-                
-                // Stepper-Targets auf aktuelle Position setzen
-                for (int i = 0; i < 6; ++i) {
-                    _steppers[i]->moveTo(_steppers[i]->currentPosition());
-                }
-            }
-        }
-        
-        Debug::println(F("=== processKinematicControl() end ==="));
+    // Getter für den Kalibrierungs-Lock-Status
+    bool isCalibrationLocked() {
+        return calibrationLocked;
     }
     
+    // Setter für den Kalibrierungs-Lock-Status
+    void setCalibrationLocked(bool locked) {
+        calibrationLocked = locked;
+    }
+    
+    // Getter für den Homing-Status
+    bool isHomingStarted() {
+        return homingStarted;
+    }
+    
+    // Setter für den Homing-Status
+    void setHomingStarted(bool started) {
+        homingStarted = started;
+    }
+    
+    // Getter für den aktuellen Homing-Gelenk-Index
+    int getHomingJointIndex() {
+        return homingJointIndex;
+    }
+    
+    // Setter für den Homing-Gelenk-Index
+    void setHomingJointIndex(int index) {
+        homingJointIndex = index;
+    }
+    
+        // Getter für die aktuelle Homing-Menü-Auswahl
+    int getHomingMenuSelection() {
+        return homingMenuSelection;
+    }
+    
+    // Setter für die Homing-Menü-Auswahl
+    void setHomingMenuSelection(int selection) {
+        homingMenuSelection = selection;
+    }
+    
+    // Getter für die Anzahl der Homing-Menü-Optionen
+    int getHomingMenuOptionCount() {
+        return HOMING_MENU_COUNT;
+    }
+    
+    // Getter für den Namen einer Homing-Menü-Option
+    const char* getHomingMenuOptionName(int option) {
+        switch (option) {
+            case HOMING_MENU_START_HOMING: return "Start Homing";
+            case HOMING_MENU_TO_CENTER:    return "Move to Center";
+            case HOMING_MENU_SAVE_HOME:    return "Save Home";
+            case HOMING_MENU_LOAD_HOME:    return "Load Home";
+            case HOMING_MENU_CLEAR_HOME:   return "Clear Home";
+            case HOMING_MENU_CONFIG:       return "Config";
+            default:                       return "Unknown";
+        }
+    }
+    
+    // Homing-Modus verarbeiten
     void processHomingMode() {
-        // Menü anzeigen, wenn kein Homing läuft
+        // Menü immer anzeigen, wenn kein Homing läuft
         if (!homingStarted) {
             processHomingMenu();
             return;
         }
         
         // Wenn Homing läuft, Fortschritt anzeigen und homeJoint() benutzen
-        DisplaySystem::displayHomingMode();
+        DisplaySystem::displayHomingProgress(homingJointIndex);
         
         if (homingJointIndex < 6) {
-            if (homeJoint(homingJointIndex)) {
+            if (_homeJoint(homingJointIndex)) {
                 homingJointIndex++;
                 Debug::print(F("Joint "));
                 Debug::print(homingJointIndex);
-                Debug::println(F(" homed"));
+                Debug::println(F(" referenced"));
                 delay(500);
             }
         } else {
@@ -403,52 +300,24 @@ enum SystemState {
             // Kinematik synchronisieren
             JointAngles homeAngles;
             for (int i = 0; i < 6; i++) {
-                float posDegrees = _steppers[i]->currentPosition() / _stepperConfig[i].stepsPerDegree;
+                float posDegrees = StepperSystem::steppers[i]->currentPosition() / 
+                 StepperSystem::enhancedSteppers[i].stepsPerDegree;
                 homeAngles.angles[i] = posDegrees * M_PI / 180.0;
             }
             robotKin->setCurrentJointAngles(homeAngles);
         }
     }
     
+    // Homing-Menü verarbeiten
     void processHomingMenu() {
-        Joystick* leftJoystick = JoystickSystem::getLeftJoystick();
-        Joystick* rightJoystick = JoystickSystem::getRightJoystick();
-        
-        if (!leftJoystick || !rightJoystick) return;
-        
-        // Moduswechsel per rechtem Button (entprellt)
-        static bool rightButtonPressed = false;
-        if (rightJoystick->isPressed() && !rightButtonPressed) {
-            if (millis() - stateChangeTime > 500) {
-                rightButtonPressed = true;
-                stateChangeTime = millis();
-                
-                // Modi durchschalten: Homing -> Calibration -> Joint -> Kinematic -> Homing ...
-                if (currentState == STATE_HOMING_MODE) {
-                    setState(STATE_CALIBRATION_MODE);
-                } else if (currentState == STATE_CALIBRATION_MODE) {
-                    setState(STATE_JOINT_MODE);
-                } else if (currentState == STATE_JOINT_MODE) {
-                    setState(STATE_KINEMATIC_MODE);
-                } else if (currentState == STATE_KINEMATIC_MODE) {
-                    exitKinematicMode();
-                    setState(STATE_HOMING_MODE);
-                    homingStarted = false;
-                    homingJointIndex = 0;
-                }
-                
-                Debug::print(F("Mode changed to: "));
-                Debug::println(currentState);
-                return;
-            }
-        } else if (!rightJoystick->isPressed()) {
-            rightButtonPressed = false;
-        }
-        
-        DisplaySystem::displayHomingMenu();
+        // Menü-Auswahl anzeigen
+        DisplaySystem::displayHomingMenu(homingMenuSelection, HOMING_MENU_COUNT);
         
         // Menüauswahl mit rechtem Joystick Y
-        float rightY = rightJoystick->getNormalizedY();
+        float rightY = JoystickSystem::getRightJoystick()->getNormalizedY();
+        
+        // Menü-Navigation (mit Entprellung)
+        static unsigned long lastMenuMove = 0;
         if (millis() - lastMenuMove > 200) {
             if (rightY > 0.7f && homingMenuSelection > 0) {
                 homingMenuSelection--;
@@ -459,87 +328,265 @@ enum SystemState {
             }
         }
         
-        // Linker Button: Bestätigen (nur auf steigende Flanke)
+        // Linker Button: Menüoption auswählen
         static bool lastLeftPressed = false;
-        bool leftPressed = leftJoystick->isPressed();
+        bool leftPressed = JoystickSystem::getLeftJoystick()->isPressed();
         
         if (leftPressed && !lastLeftPressed) {
-            switch (homingMenuSelection) {
-                case HOMING_MENU_START_HOMING:
-                    homingStarted = true;
+            processHomingMenuSelection();
+        }
+        
+        lastLeftPressed = leftPressed;
+        
+        // Rechter Button: Modus wechseln
+        static bool lastRightPressed = false;
+        bool rightPressed = JoystickSystem::getRightJoystick()->isPressed();
+        
+        if (rightPressed && !lastRightPressed) {
+            if (millis() - stateChangeTime > 500) {
+                // Modi durchschalten: Homing -> Calibration -> Joint -> Kinematic -> Homing
+                if (currentState == STATE_HOMING_MODE) {
+                    changeState(STATE_CALIBRATION_MODE);
+                } else if (currentState == STATE_CALIBRATION_MODE) {
+                    changeState(STATE_JOINT_MODE);
+                } else if (currentState == STATE_JOINT_MODE) {
+                    changeState(STATE_KINEMATIC_MODE);
+                } else if (currentState == STATE_KINEMATIC_MODE) {
+                    changeState(STATE_HOMING_MODE);
+                    homingStarted = false;
                     homingJointIndex = 0;
-                    break;
-                    
-                case HOMING_MENU_TO_CENTER: {
-                    Debug::println(F("Menu: Move to center selected"));
-                    
-                    // Zielpunkt im Arbeitsraum definieren
-                    float a1 = robotConfig.dhParams[1].a;
-                    float a2 = robotConfig.dhParams[2].a;
-                    float minZ = robotConfig.dhParams[0].d;
-                    
-                    CartesianPose centerPose;
-                    centerPose.x = 0;
-                    centerPose.y = 0;
-                    centerPose.z = minZ + (a1 + a2) / 2.0f;
-                    centerPose.yaw = 0;
-                    centerPose.pitch = 0;
-                    centerPose.roll = 0;
-                    
-                    moveToPose(centerPose);
-                    break;
-                }
-                
-                case HOMING_MENU_SAVE_HOME: {
-                    JointAngles current = robotKin->getCurrentJointAngles();
-                    saveRobotHome(current);
-                                        DisplaySystem::showMessage("Home saved!", nullptr, 1200);
-                    delay(1200);
-                    break;
-                }
-                
-                case HOMING_MENU_LOAD_HOME: {
-                    JointAngles homeAngles;
-                    if (loadRobotHome(homeAngles)) {
-                        // KEINE Bewegung! Nur Kinematik und Stepper-Positionen setzen
-                        robotKin->setCurrentJointAngles(homeAngles);
-                        for (int i = 0; i < 6; ++i) {
-                            _steppers[i]->setCurrentPosition(
-                                homeAngles.angles[i] * 180.0 / M_PI * _stepperConfig[i].stepsPerDegree
-                            );
-                        }
-                        Debug::println(F("Home loaded! Kinematics synchronized, no movement"));
-                        DisplaySystem::showMessage("Home loaded!", "No movement", 1200);
-                        delay(1200);
-                    } else {
-                        DisplaySystem::showMessage("No home", "saved!", 1200);
-                        delay(1200);
-                    }
-                    break;
-                }
-                
-                case HOMING_MENU_CLEAR_HOME: {
-                    if (clearHomePressCount == 0 || millis() - lastClearHomePress > 1500) {
-                        clearHomePressCount = 1;
-                        lastClearHomePress = millis();
-                        DisplaySystem::showMessage("Press again", "to clear home!");
-                    } else if (clearHomePressCount == 1) {
-                        clearRobotHome();
-                        DisplaySystem::showMessage("Home cleared!", nullptr, 1200);
-                        delay(1200);
-                        clearHomePressCount = 0;
-                    }
-                    break;
                 }
             }
         }
-        lastLeftPressed = leftPressed;
+        
+        lastRightPressed = rightPressed;
     }
     
-    bool homeJoint(int jointIndex) {
+    // Verarbeitet eine ausgewählte Option im Homing-Menü
+    void processHomingMenuSelection() {
+        switch (homingMenuSelection) {
+            case HOMING_MENU_START_HOMING:
+                homingStarted = true;
+                homingJointIndex = 0;
+                break;
+                
+            case HOMING_MENU_TO_CENTER:
+                _moveToCenter();
+                break;
+                
+            case HOMING_MENU_SAVE_HOME: {
+                JointAngles current = robotKin->getCurrentJointAngles();
+                saveRobotHome(current);
+                DisplaySystem::showMessage("Home saved!", nullptr, 1200);
+                break;
+            }
+                
+            case HOMING_MENU_LOAD_HOME: {
+    JointAngles homeAngles;
+    if (loadRobotHome(homeAngles)) {
+        // KEINE Bewegung! Nur Kinematik und Stepper-Positionen setzen
+        robotKin->setCurrentJointAngles(homeAngles);
+        for (int i = 0; i < 6; ++i) {
+            StepperSystem::steppers[i]->setCurrentPosition(
+                homeAngles.angles[i] * 180.0 / M_PI * StepperSystem::enhancedSteppers[i].stepsPerDegree
+            );
+        } // Missing closing brace for the for loop
+        Debug::println(F("Home loaded! Kinematics synchronized, no movement."));
+        DisplaySystem::showMessage("Home loaded!", "No movement", 1200);
+    } else {
+        DisplaySystem::showMessage("No home", "saved!", 1200);
+    }
+    break;
+}
+            case HOMING_MENU_CLEAR_HOME: {
+                static unsigned long lastClearHomePress = 0;
+                static int clearHomePressCount = 0;
+                
+                if (clearHomePressCount == 0 || millis() - lastClearHomePress > 1500) {
+                    clearHomePressCount = 1;
+                    lastClearHomePress = millis();
+                    DisplaySystem::showMessage("Press again", "to clear home!");
+                } else if (clearHomePressCount == 1) {
+                    clearRobotHome();
+                    DisplaySystem::showMessage("Home cleared!", nullptr, 1200);
+                    clearHomePressCount = 0;
+                }
+                break;
+            }
+                
+            case HOMING_MENU_CONFIG:
+                changeState(STATE_CONFIG_MODE);
+                break;
+        }
+    }
+    
+    // Home-Position-Management
+    
+    // Home-Position im EEPROM speichern
+    void saveRobotHome(const JointAngles& angles) {
+        struct RobotHomeData {
+            uint32_t magic;
+            float jointAngles[6];
+        };
+        
+        RobotHomeData data;
+        data.magic = ROBOT_HOME_MAGIC;
+        
+        for (int i = 0; i < 6; ++i) {
+            data.jointAngles[i] = angles.angles[i];
+        }
+        
+        EEPROM.put(100, data);
+        Debug::println(F("Home position saved to EEPROM"));
+    }
+    
+    // Home-Position aus EEPROM laden
+    bool loadRobotHome(JointAngles& angles) {
+        struct RobotHomeData {
+            uint32_t magic;
+            float jointAngles[6];
+        };
+        
+        RobotHomeData data;
+        EEPROM.get(100, data);
+        
+        if (data.magic != ROBOT_HOME_MAGIC) {
+            Debug::println(F("No valid home data found in EEPROM"));
+            return false;
+        }
+        
+        for (int i = 0; i < 6; ++i) {
+            angles.angles[i] = data.jointAngles[i];
+        }
+        
+        Debug::println(F("Home position loaded from EEPROM"));
+        return true;
+    }
+    
+    // Home-Position im EEPROM löschen
+    void clearRobotHome() {
+        struct RobotHomeData {
+            uint32_t magic;
+            float jointAngles[6];
+        };
+        
+        RobotHomeData data = {0};
+        EEPROM.put(100, data);
+        Debug::println(F("Home position cleared from EEPROM"));
+    }
+    
+    // Home-Position auf SD-Karte speichern
+    bool saveRobotHomeToSD(const JointAngles& angles, const char* filename) {
+        // Standard-Dateiname, wenn keiner angegeben
+        const char* fname = filename ? filename : "HOME.DAT";
+        
+        // SD-Karte überprüfen
+        if (!SD.begin()) {
+            Debug::println(F("SD card initialization failed!"));
+            return false;
+        }
+        
+        // Datei öffnen/erstellen
+        File file = SD.open(fname, FILE_WRITE);
+        if (!file) {
+            Debug::println(F("Failed to open file for writing"));
+            return false;
+        }
+        
+        // Magic-Nummer schreiben
+        uint32_t magic = ROBOT_HOME_MAGIC;
+        file.write((uint8_t*)&magic, sizeof(magic));
+        
+        // Gelenk-Winkel schreiben
+        for (int i = 0; i < 6; ++i) {
+            float angle = angles.angles[i];
+            file.write((uint8_t*)&angle, sizeof(float));
+        }
+        
+        file.close();
+        Debug::print(F("Home position saved to SD card as "));
+        Debug::println(fname);
+        return true;
+    }
+    
+    // Home-Position von SD-Karte laden
+    bool loadRobotHomeFromSD(JointAngles& angles, const char* filename) {
+        // Standard-Dateiname, wenn keiner angegeben
+        const char* fname = filename ? filename : "HOME.DAT";
+        
+        // SD-Karte überprüfen
+        if (!SD.begin()) {
+            Debug::println(F("SD card initialization failed!"));
+            return false;
+        }
+        
+        // Datei öffnen
+        File file = SD.open(fname, FILE_READ);
+        if (!file) {
+            Debug::println(F("Failed to open file for reading"));
+            return false;
+        }
+        
+        // Magic-Nummer lesen und überprüfen
+        uint32_t magic;
+        file.read((uint8_t*)&magic, sizeof(magic));
+        
+        if (magic != ROBOT_HOME_MAGIC) {
+            Debug::println(F("Invalid home file format"));
+            file.close();
+            return false;
+        }
+        
+        // Gelenk-Winkel lesen
+        for (int i = 0; i < 6; ++i) {
+            float angle;
+            file.read((uint8_t*)&angle, sizeof(float));
+            angles.angles[i] = angle;
+        }
+        
+        file.close();
+        Debug::print(F("Home position loaded from SD card: "));
+        Debug::println(fname);
+        return true;
+    }
+    
+    // Home-Position von SD-Karte löschen
+    bool clearRobotHomeFromSD(const char* filename) {
+        // Standard-Dateiname, wenn keiner angegeben
+        const char* fname = filename ? filename : "HOME.DAT";
+        
+        // SD-Karte überprüfen
+        if (!SD.begin()) {
+            Debug::println(F("SD card initialization failed!"));
+            return false;
+        }
+        
+        // Datei löschen
+        if (SD.exists(fname)) {
+            if (SD.remove(fname)) {
+                Debug::print(F("Home file deleted from SD card: "));
+                Debug::println(fname);
+                return true;
+            } else {
+                Debug::println(F("Failed to delete home file"));
+                return false;
+            }
+        } else {
+            Debug::println(F("Home file not found on SD card"));
+            return false;
+        }
+    }
+    
+    // --- Private Hilfsfunktionen ---
+    
+    // Homing für ein einzelnes Gelenk durchführen
+    static bool _homeJoint(int jointIndex) {
         static bool homingJointStarted = false;
         static bool coarseHomingDone = false;
         static int lastSwitchState = HIGH;
+        
+        extern StepperConfig _stepperConfig[6];
+        extern PinConfig _pinConfig;
         
         // Erste Initialisierung für dieses Gelenk
         if (!homingJointStarted) {
@@ -552,13 +599,13 @@ enum SystemState {
             // Motor aktivieren
             digitalWrite(_pinConfig.stepperPins[jointIndex][2], LOW); // Enable aktivieren
             
-            // Schnelle Homing-Geschwindigkeit für Grobsuche setzen
-            _steppers[jointIndex]->setSpeed(-_stepperConfig[jointIndex].homingSpeed);
+            // Schnelle Homing-Geschwindigkeit für die Grobsuche
+            StepperSystem::steppers[jointIndex]->setSpeed(-_stepperConfig[jointIndex].homingSpeed);
             
             // Aktuelle Position merken
-            _steppers[jointIndex]->setCurrentPosition(0);
+            StepperSystem::steppers[jointIndex]->setCurrentPosition(0);
             
-            // Initialen Zustand des Endschalters lesen
+            // Initialen Endschalter-Zustand lesen
             lastSwitchState = digitalRead(_pinConfig.stepperPins[jointIndex][3]);
             
             Debug::print(F("Limit switch pin: "));
@@ -579,17 +626,17 @@ enum SystemState {
                 Debug::println(F(" reached during coarse homing"));
                 
                 // Motor anhalten
-                _steppers[jointIndex]->setSpeed(0);
-                _steppers[jointIndex]->stop();
+                StepperSystem::steppers[jointIndex]->setSpeed(0);
+                StepperSystem::steppers[jointIndex]->stop();
                 
                 delay(100);
                 
                 // Vom Endschalter zurückfahren (positive Richtung, weg vom Endschalter)
-                _steppers[jointIndex]->move(100); // Etwa 5 Grad zurück bei 20 steps/degree
-                _steppers[jointIndex]->setSpeed(_stepperConfig[jointIndex].homingSpeed * 0.5);
+                StepperSystem::steppers[jointIndex]->move(100); // Etwa 5 Grad zurück bei 20 steps/degree
+                StepperSystem::steppers[jointIndex]->setSpeed(_stepperConfig[jointIndex].homingSpeed * 0.5);
                 
-                while (_steppers[jointIndex]->distanceToGo() != 0) {
-                    _steppers[jointIndex]->runSpeed();
+                while (StepperSystem::steppers[jointIndex]->distanceToGo() != 0) {
+                    StepperSystem::steppers[jointIndex]->runSpeed();
                 }
                 
                 delay(100);
@@ -598,14 +645,14 @@ enum SystemState {
                 Debug::println(jointIndex + 1);
                 
                 // Langsames Homing einleiten (1/4 der normalen Geschwindigkeit)
-                _steppers[jointIndex]->setSpeed(-_stepperConfig[jointIndex].homingSpeed * 0.25);
+                StepperSystem::steppers[jointIndex]->setSpeed(-_stepperConfig[jointIndex].homingSpeed * 0.25);
                 
                 coarseHomingDone = true;
                 lastSwitchState = HIGH; // Zurücksetzen für die Feinsuche
             }
             
             lastSwitchState = currentSwitchState;
-            _steppers[jointIndex]->runSpeed();
+            StepperSystem::steppers[jointIndex]->runSpeed();
         }
         // Phase 2: Präzise langsame Suche
         else {
@@ -616,10 +663,10 @@ enum SystemState {
                 Debug::print(limitSwitchPin);
                 Debug::println(F(")"));
                 
-                _steppers[jointIndex]->setSpeed(0);
-                _steppers[jointIndex]->stop();
+                StepperSystem::steppers[jointIndex]->setSpeed(0);
+                StepperSystem::steppers[jointIndex]->stop();
                 
-                _steppers[jointIndex]->setCurrentPosition(0);
+                StepperSystem::steppers[jointIndex]->setCurrentPosition(0);
                 
                 digitalWrite(_pinConfig.stepperPins[jointIndex][2], HIGH);
                 
@@ -633,102 +680,65 @@ enum SystemState {
             }
             
             lastSwitchState = currentSwitchState;
-            _steppers[jointIndex]->runSpeed();
+            StepperSystem::steppers[jointIndex]->runSpeed();
         }
         
         return false; // Homing für dieses Gelenk läuft noch
     }
     
-    void saveRobotHome(const JointAngles& angles) {
-        RobotHomeData data;
-        data.magic = ROBOT_HOME_MAGIC;
-        for (int i = 0; i < 6; ++i) data.jointAngles[i] = angles.angles[i];
-        EEPROM.put(100, data);
-    }
-    
-    bool loadRobotHome(JointAngles& angles) {
-        RobotHomeData data;
-        EEPROM.get(100, data);
-        if (data.magic != ROBOT_HOME_MAGIC) return false;
-        for (int i = 0; i < 6; ++i) angles.angles[i] = data.jointAngles[i];
-        return true;
-    }
-    
-    void clearRobotHome() {
-        RobotHomeData data = {0};
-        EEPROM.put(100, data);
-    }
-    
-    void synchronizeKinematicsWithSteppers() {
-        JointAngles currentAngles = robotKin->getCurrentJointAngles();
-        bool updated = false;
+    // Bewegt den Roboter zur zentralen Position
+    static void _moveToCenter() {
+        Debug::println(F("Menu: Move to center selected"));
         
-        for (int i = 0; i < 6; i++) {
-            // Aktuelle Stepper-Position in Grad umrechnen
-            long currentSteps = _steppers[i]->currentPosition();
-            float currentDegrees = currentSteps / _stepperConfig[i].stepsPerDegree;
-            float currentRadians = currentDegrees * M_PI / 180.0;
+        // Zielpunkt im Arbeitsraum definieren
+        float a1 = robotConfig.dhParams[1].a;
+        float a2 = robotConfig.dhParams[2].a;
+        float minZ = robotConfig.dhParams[0].d;
+        
+        CartesianPose centerPose;
+        centerPose.x = 0;
+        centerPose.y = 0;
+        centerPose.z = minZ + (a1 + a2) / 2.0f;
+        centerPose.yaw = 0;
+        centerPose.pitch = 0;
+        centerPose.roll = 0;
+        
+        Debug::print(F("Target pose: X="));
+        Debug::print(centerPose.x);
+        Debug::print(F(" Y="));
+        Debug::print(centerPose.y);
+        Debug::print(F(" Z="));
+        Debug::println(centerPose.z);
+        
+        // IK berechnen
+        JointAngles centerAngles;
+        if (robotKin->inverseKinematics(centerPose, centerAngles)) {
+            // Zielpositionen berechnen
+            long targetSteps[6];
+            long startSteps[6];
             
-            // Wenn es einen Unterschied gibt, aktualisiere die Kinematik
-            if (fabs(currentRadians - currentAngles.angles[i]) > 0.01) {
-                currentAngles.angles[i] = currentRadians;
-                updated = true;
-                
-                Debug::print(F("Synchronizing joint "));
-                Debug::print(i + 1);
-                Debug::print(F(": "));
-                Debug::print(currentDegrees);
-                Debug::print(F("° ("));
-                Debug::print(currentSteps);
-                Debug::println(F(" steps)"));
+            for (int i = 0; i < 6; ++i) {
+                float deg = centerAngles.angles[i] * 180.0 / M_PI;
+                targetSteps[i] = deg * StepperSystem::enhancedSteppers[i].stepsPerDegree;
+                startSteps[i] = StepperSystem::steppers[i]->currentPosition();
+                StepperSystem::steppers[i]->moveTo(targetSteps[i]);
             }
-        }
-        
-        if (updated) {
-            robotKin->setCurrentJointAngles(currentAngles);
-        }
-    }
-    
-    void exitKinematicMode() {
-        for (int i = 0; i < 6; ++i) {
-            _steppers[i]->moveTo(_steppers[i]->currentPosition());
-        }
-        synchronizeKinematicsWithSteppers();
-    }
-    
-    void moveToPose(const CartesianPose& targetPose, bool waitForCompletion) {
-        Debug::println(F("Moving to target Cartesian pose..."));
-        
-        JointAngles targetAngles;
-        if (!robotKin->inverseKinematics(targetPose, targetAngles)) {
-            Debug::println(F("IK error! Target not reachable."));
-            DisplaySystem::showMessage("IK error!");
-            return;
-        }
-        
-        // Zielpositionen berechnen
-        long targetSteps[6];
-        long startSteps[6];
-        for (int i = 0; i < 6; ++i) {
-            float deg = targetAngles.angles[i] * 180.0 / M_PI;
-            targetSteps[i] = deg * _stepperConfig[i].stepsPerDegree;
-            startSteps[i] = _steppers[i]->currentPosition();
-            _steppers[i]->moveTo(targetSteps[i]);
-        }
-        
-        if (waitForCompletion) {
+            
             // Bewegung mit Fortschrittsbalken
             bool allDone = false;
             while (!allDone) {
                 allDone = true;
                 long maxDist = 0, maxDistToGo = 0;
+                
                 for (int i = 0; i < 6; ++i) {
                     long dist = abs(targetSteps[i] - startSteps[i]);
-                    long distToGo = abs(_steppers[i]->distanceToGo());
+                    long distToGo = abs(StepperSystem::steppers[i]->distanceToGo());
+                    
                     if (dist > maxDist) maxDist = dist;
                     if (distToGo > maxDistToGo) maxDistToGo = distToGo;
-                    if (_steppers[i]->distanceToGo() != 0) {
-                        _steppers[i]->run();
+                    
+                    if (StepperSystem::steppers[i]->distanceToGo() != 0) {
+                        StepperSystem::steppers[i]->run();
                         allDone = false;
                     }
                 }
@@ -741,162 +751,47 @@ enum SystemState {
                     if (progress > 1) progress = 1;
                 }
                 
-                // Fortschrittsanzeige aktualisieren
+                // Fortschrittsbalken anzeigen
                 DisplaySystem::displayHomingCenterProgress(progress);
                 
                 delay(10);
             }
             
+            // Stepper-Positionen aktualisieren
             for (int i = 0; i < 6; ++i) {
-                _steppers[i]->setCurrentPosition(_steppers[i]->targetPosition());
+                StepperSystem::steppers[i]->setCurrentPosition(StepperSystem::steppers[i]->targetPosition());
             }
-            robotKin->setCurrentJointAngles(targetAngles);
+            
+            // Kinematik aktualisieren
+            robotKin->setCurrentJointAngles(centerAngles);
             
             // FK zur Kontrolle
             CartesianPose pose = robotKin->getCurrentPose();
-            Debug::print(F("FK End pose: X=")); Debug::print(pose.x, 2);
-            Debug::print(F(" Y=")); Debug::print(pose.y, 2);
-            Debug::print(F(" Z=")); Debug::print(pose.z, 2);
-            Debug::print(F(" | Yaw=")); Debug::print(pose.yaw*180.0/M_PI, 2);
-            Debug::print(F(" Pitch=")); Debug::print(pose.pitch*180.0/M_PI, 2);
-            Debug::print(F(" Roll=")); Debug::println(pose.roll*180.0/M_PI, 2);
-        }
-    }
-    
-    void moveToJointAngles(const JointAngles& targetAngles, bool waitForCompletion) {
-        Debug::println(F("Moving to target joint angles..."));
-        
-        // Zielpositionen berechnen
-        long targetSteps[6];
-        long startSteps[6];
-        for (int i = 0; i < 6; ++i) {
-            float deg = targetAngles.angles[i] * 180.0 / M_PI;
-            targetSteps[i] = deg * _stepperConfig[i].stepsPerDegree;
-            startSteps[i] = _steppers[i]->currentPosition();
-            _steppers[i]->moveTo(targetSteps[i]);
-        }
-        
-        if (waitForCompletion) {
-            // Ähnlich wie bei moveToPose, mit Fortschrittsbalken
-            bool allDone = false;
-            while (!allDone) {
-                allDone = true;
-                for (int i = 0; i < 6; ++i) {
-                    if (_steppers[i]->distanceToGo() != 0) {
-                        _steppers[i]->run();
-                        allDone = false;
-                    }
-                }
-                delay(10);
-            }
+            Debug::print(F("FK End pose: X="));
+            Debug::print(pose.x, 2);
+            Debug::print(F(" Y="));
+            Debug::print(pose.y, 2);
+            Debug::print(F(" Z="));
+            Debug::print(pose.z, 2);
+            Debug::print(F(" | Yaw="));
+            Debug::print(pose.yaw * 180.0 / M_PI, 2);
+            Debug::print(F(" Pitch="));
+            Debug::print(pose.pitch * 180.0 / M_PI, 2);
+            Debug::print(F(" Roll="));
+            Debug::println(pose.roll * 180.0 / M_PI, 2);
             
-            for (int i = 0; i < 6; ++i) {
-                _steppers[i]->setCurrentPosition(_steppers[i]->targetPosition());
-            }
-            robotKin->setCurrentJointAngles(targetAngles);
+            DisplaySystem::showMessage("Robot is now", "in center!", 1500);
+        } else {
+            Debug::println(F("IK error! Target not reachable."));
+            DisplaySystem::showMessage("IK error!", nullptr, 1500);
         }
     }
     
-    void resetKalmanFilters() {
-        positionFilterX.reset();
-        positionFilterY.reset();
-        positionFilterZ.reset();
-        rotationFilter.reset();
-    }
+    // Definition des SD-Karten-CS-Pins (falls in Ihrer Konfiguration nicht definiert)
+    #ifndef SD_CS_PIN
+    #define SD_CS_PIN 53  // Standard für Arduino Mega
+    #endif
     
-    // Getter und Setter
-    SystemState getCurrentState() {
-        return currentState;
-    }
-    
-    void setState(SystemState newState) {
-        currentState = newState;
-        stateChangeTime = millis();
-    }
-    
-    void setStateChangeTime(unsigned long time) {
-        stateChangeTime = time;
-    }
-    
-    int getSelectedJoint() {
-        return selectedJoint;
-    }
-    
-    void setSelectedJoint(int joint) {
-        selectedJoint = joint;
-    }
-    
-    int getHomingMenuSelection() {
-        return homingMenuSelection;
-    }
-    
-    bool isHomingStarted() {
-        return homingStarted;
-    }
-    
-    int getHomingJointIndex() {
-        return homingJointIndex;
-    }
-    
-    void setCalibrationLocked(bool locked) {
-        calibrationLock = locked;
-    }
-    
-    void setHomingStarted(bool started) {
-        homingStarted = started;
-    }
-        }
-    
-    void incrementHomingJointIndex() {
-        homingJointIndex++;
-    }
-    
-    RobotKinematics* getKinematics() {
-        return robotKin;
-    }
-    
-    bool isWithinWorkspace(const CartesianPose& pose) {
-        // Konstanten für Begrenzungen aus Konfiguration
-        const float a1 = robotConfig.dhParams[1].a;
-        const float a2 = robotConfig.dhParams[2].a;
-        const float maxRad = a1 + a2;
-        const float minZ = robotConfig.dhParams[0].d;
-        const float maxZ = minZ + maxRad;
-        
-        // Prüfe, ob die Position innerhalb der Grenzen liegt
-        if (pose.x < -maxRad || pose.x > maxRad) return false;
-        if (pose.y < -maxRad || pose.y > maxRad) return false;
-        if (pose.z < minZ || pose.z > maxZ) return false;
-        
-        // Zusätzliche Prüfung der radialen Entfernung
-        float radius = sqrt(pose.x*pose.x + pose.y*pose.y);
-        if (radius > maxRad) return false;
-        
-        return true;
-    }
-    
-    void enableSteppers() {
-        for (int i = 0; i < 6; i++) {
-            digitalWrite(_pinConfig.stepperPins[i][2], LOW);  // Enable ist aktiv LOW
-        }
-    }
-    
-    void disableSteppers() {
-        for (int i = 0; i < 6; i++) {
-            digitalWrite(_pinConfig.stepperPins[i][2], HIGH);  // Disable ist HIGH
-        }
-    }
-    
-    void emergencyStop() {
-        // Alle Motoren sofort stoppen und deaktivieren
-        for (int i = 0; i < 6; i++) {
-            _steppers[i]->setSpeed(0);
-            _steppers[i]->stop();
-            digitalWrite(_pinConfig.stepperPins[i][2], HIGH);  // Disable
-        }
-        
-        setState(EMERGENCY_STOP);
-        DisplaySystem::showMessage("EMERGENCY STOP", "System halted!");
-    }
+} // namespace RobotSystem
 
 

@@ -2,49 +2,29 @@
 #define JOYSTICK_SYSTEM_H
 
 #include <Arduino.h>
-#include "joystick.h"
-#include "kalmanfilter.h"
+#include "joystick.h"        // Include your existing Joystick class
+#include "joystick_types.h"  // Include existing JoystickValues structure
 
-// Struktur für Joystick-Werte
-struct JoystickValues {
-    float leftX;
-    float leftY;
-    float rightX;
-    float rightY;
-    bool leftButton;
-    bool rightButton;
-};
-
+// Only include the namespace part, not the class definitions
 namespace JoystickSystem {
-    // Initialisierung
     void init();
-    
-    // Hauptupdate-Funktion
     void update();
     
-    // Joystick-Werte lesen
-    JoystickValues readValues();
-    
-    // Zugriff auf Joystick-Objekte
     Joystick* getLeftJoystick();
     Joystick* getRightJoystick();
     
-    // Kalibrierungsfunktionen
-    void calibrateJoysticks();
-    void startFullCalibration();
+    // Calibration functions
+    void startCalibration();
+    void processCalibration();
+    bool isCalibrating();
     
-    // Button-Input verarbeiten
-    void processButtonInput();
-    
-    // Getter für Joystick-Verarbeitungsfunktionen
-    JoystickValues getJoystickValues();
-    bool isLeftButtonPressed();
-    bool isRightButtonPressed();
-    
-    // Hilfsfunktionen für verschiedene Modi
+    // Process joystick inputs for different modes
     void processJointModeJoysticks();
     void processKinematicModeJoysticks();
-    void processMenuJoysticks();
+    
+    // Get current joystick values in normalized format
+    // Use the existing JoystickValues structure from joystick_types.h
+    JoystickValues getJoystickValues();
 }
 
 #endif // JOYSTICK_SYSTEM_H
