@@ -13,8 +13,6 @@ bool ModeController::debugState = false;
 void ModeController::init() {
     // Configure mode switch and debug pins
     pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
-    pinMode(DEBUG_MODE_PIN, OUTPUT);
-    digitalWrite(DEBUG_MODE_PIN, LOW);
     
     // Initialize display via DisplaySystem
     DisplaySystem::init();
@@ -22,8 +20,6 @@ void ModeController::init() {
     // Initialize ADXL345 accelerometer for future stability control
     initADXL();
     
-    // Initialize watchdog
-    setupWatchdog();
     
     // Display welcome animation
     showAnimation();
@@ -51,10 +47,6 @@ void ModeController::update() {
         // Button released without mode change
         buttonWasPressed = false;
     }
-    
-    // Toggle debug pin to assist with oscilloscope debugging
-    toggleDebugPin();
-    
     // Update system state based on current mode
     updateSystemState();
 }
@@ -90,40 +82,64 @@ void ModeController::initADXL() {
     
     // Future implementation of accelerometer for stability control
 }
-
-void ModeController::setupWatchdog() {
-    // Future implementation of watchdog timer
-}
-
-void ModeController::toggleDebugPin() {
-    // Toggle debug pin state for oscilloscope monitoring
-    debugState = !debugState;
-    digitalWrite(DEBUG_MODE_PIN, debugState);
-}
-
 void ModeController::updateSystemState() {
-    // Update the robot system state based on the current controller mode
+    // Aktualisiere den Roboter-Systemzustand basierend auf dem aktuellen Controller-Modus
     if (RobotSystem::getCurrentState() == NORMAL_OPERATION) {
-        // Display differs based on mode
+        // Display je nach Modus unterschiedlich aktualisieren
         switch (currentMode) {
             case MODE_JOINT:
-                // Use joint mode display
+                // Joint-Modus-Display verwenden
                 DisplaySystem::displayJointMode(
-                
                     RobotSystem::getKinematics(),
                     StepperSystem::getSelectedJoint()
                 );
+                
+                // Joysticks für Joint-Steuerung verarbeiten
+                JoystickSystem::processJointModeJoysticks();
                 break;
                 
             case MODE_POSITION_ONLY:
-                // Use position mode display
+                // Positions-Modus-Display verwenden
                 DisplaySystem::displayPositionMode(RobotSystem::getKinematics());
+                
+                // Joysticks für Position-Steuerung verarbeiten
+                JoystickSystem::processKinematicModeJoysticks();
                 break;
                 
-            case MODE_POSITION_ORIENTATION:
-                // Use kinematic mode display
-                DisplaySystem::displayKinematicMode(RobotSystem::getKinematics());
+            case MODE_FULL_POSE:
+                // Vollständiges Pose-Display verwenden
+                DisplaySystem::displayFullPoseMode(RobotSystem::getKinematics());
+                
+                // Joysticks für vollständige Pose-Steuerung verarbeiten
+                JoystickSystem::processKinematicModeJoysticks();
+                break;
+                
+            case MODE_TEACHING:
+                // Teaching-Modus-Display verwenden
+                DisplaySystem::displayTeachingMode();
+                break;
+                
+            case MODE_HOMING:
+                // Homing-Modus-Display verwenden
+                if (RobotSystem::isHomingStarted()) {
+                    DisplaySystem::displayHomingProgress(RobotSystem::getHomingJointIndex());
+                } else {
+                    DisplaySystem::displayHomingMenu();
+                    JoystickSystem::processMenuJoysticks();
+                }
+                break;
+                
+            case MODE_SETTINGS:
+                // Einstellungsmenü-Display verwenden
+                DisplaySystem::displaySettingsMenu();
+                JoystickSystem::processMenuJoysticks();
+                break;
+                
+            case MODE_DEBUG:
+                // Debug-Display verwenden
+                DisplaySystem::displayDebugInfo();
                 break;
         }
     }
+    // Andere Systemzustände (HOMING, CALIBRATION, usw.) werden außerhalb verarbeitet
 }

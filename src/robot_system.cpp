@@ -36,8 +36,20 @@ namespace RobotSystem {
         JOYSTICK_LEFT_INTERNAL,
         JOYSTICK_RIGHT_INTERNAL,
         JOYSTICK_UP_INTERNAL,
-        JOYSTICK_DOWN_INTERNAL
+        JOYSTICK_DOWN_INTERNAL,
+        
     };
+    // Systemzustände
+enum SystemState {
+    STATE_STARTUP,
+    STATE_JOINT_MODE,
+    STATE_KINEMATIC_MODE,
+    STATE_HOMING_MODE,
+    STATE_CALIBRATION_MODE,
+    NORMAL_OPERATION,
+    ERROR_STATE,
+    EMERGENCY_STOP
+};
     static JoystickStateInternal joystickXState = JOYSTICK_CENTERED_INTERNAL;
     
     // Kalmanfilter für sanfte Bewegungen

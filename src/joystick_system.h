@@ -2,6 +2,7 @@
 #define JOYSTICK_SYSTEM_H
 
 #include <Arduino.h>
+#include "joystick.h"
 #include "kalmanfilter.h"
 
 // Struktur für Joystick-Werte
