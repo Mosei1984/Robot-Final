@@ -15,6 +15,7 @@ void accel_init() {
     // ADXL345 muss im Setup/Constructor mit accel.begin() initialisiert sein!
     accel.begin();
 }
+
 RobotKinematics::RobotKinematics(const RobotConfig& config) {
     _config = config;
     // Aktuelle Winkel initialisieren (Standard: alle 0)
@@ -28,6 +29,8 @@ RobotKinematics::RobotKinematics(const RobotConfig& config) {
         // Optional: Fehlerbehandlung
     }
     accel.setRange(ADXL345_RANGE_4_G); // Messbereich einstellen
+    // Add this method implementation to your RobotKinematics.cpp file
+   
 
     // Debug-Testpunkte als Ausgänge konfigurieren
     pinMode(TESTPOINT_0, OUTPUT);

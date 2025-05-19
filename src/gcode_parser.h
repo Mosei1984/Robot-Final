@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <math.h>
 #include "axis_config.h"
-#include "joystick.h"
+#include "joystick_system.h"
 
 // Interne DH-Parameter des Roboters (für Kinematik-Berechnung)
 const float DH_d1 = 50.0f;   // Basis-Höhe (Link-Offset)
@@ -179,7 +179,7 @@ bool verarbeiteGCodeZeile(String zeile) {
             return false;
         }
     }
-    //  // Aktuelle Pose aktualisieren
+    // Aktuelle Pose aktualisieren (in Radiant!)
     currentX = targetX;
     currentY = targetY;
     currentZ = targetZ;

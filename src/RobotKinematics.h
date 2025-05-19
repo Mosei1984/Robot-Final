@@ -58,6 +58,12 @@ public:
     // Inverse Kinematik: berechnet Gelenkwinkel für gegebene Ziel-Pose.
     // Rückgabe true bei Erfolg (outAngles gefüllt), false falls keine Lösung gefunden.
     bool inverseKinematics(const CartesianPose& targetPose, JointAngles& outAngles);
+    
+    // Analytical Inverse Kinematics implementation
+    bool analyticalInverseKinematics(const CartesianPose& targetPose, JointAngles& outAngles);
+    
+    // Option to choose between analytical or numerical IK
+    bool inverseKinematicsSwitch(const CartesianPose& targetPose, JointAngles& outAngles, bool useAnalytical);
 
     // Reichweiten-Check: prüft grob, ob eine Zielpose prinzipiell erreichbar ist
     bool isPoseReachable(const CartesianPose& pose);
@@ -67,7 +73,11 @@ public:
     bool initADXL();
     // Liest die aktuellen Beschleunigungswerte des ADXL345 am Tool
     
-
+    // Add public getter for config
+    const RobotConfig& getConfig() const {
+        return _config;
+    }
+    
 private:
     // Hilfsfunktion: Berechnet die 4x4-DH-Transformationsmatrix für Gelenk i bei Winkel theta
     void computeDHMatrix(int i, float theta, float T[4][4]);

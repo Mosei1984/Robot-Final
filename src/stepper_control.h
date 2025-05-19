@@ -3,15 +3,31 @@
 
 #include <Arduino.h>
 #include <AccelStepper.h>
-#include "axis_config.h"
+#include "config.h"
 
-extern AxisConfig axisConfigs[NUM_AXES];
-extern AccelStepper* steppers[NUM_AXES];
+namespace StepperSystem {
+    // Initialize stepper motors
+    void init();
+    
+    // Update stepper motors (should be called in main loop)
+    void update();
+    
+    // Test stepper motor functionality
+    void testSteppers();
+    
+    // Joint selection for manual control
+    int getSelectedJoint();
+    void setSelectedJoint(int joint);
+    
+    // Home a specific joint
+    bool homeJoint(int jointIndex);
+    
+    // Enable/disable motors
+    void enableAllMotors();
+    void disableAllMotors();
+    
+    // Access the stepper motors
+    extern AccelStepper* steppers[6];
+}
 
-void setupAxes();
-void enableAllSteppers();
-void disableAllSteppers();
-bool isEndstopTriggered(int axis);
-void resetAllStepperPositions();
-
-#endif
+#endif // STEPPER_CONTROL_H
